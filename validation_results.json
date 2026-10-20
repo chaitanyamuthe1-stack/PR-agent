@@ -1,0 +1,200 @@
+{
+  "env_and_tools": {
+    "tools": {
+      "bandit": true,
+      "pylint": true,
+      "cppcheck": false,
+      "checkstyle": false,
+      "eslint": false,
+      "rubocop": false,
+      "gcc": false,
+      "g++": false,
+      "clang": false,
+      "java": false,
+      "javac": false,
+      "node": true,
+      "ruby": false,
+      "ollama": true
+    },
+    "ollama_online": true,
+    "gateway": {
+      "provider": "GEMINI",
+      "badge": "GEMINI GEMINI-1.5-FLASH (UNCONFIGURED)",
+      "model": "gemini-1.5-flash",
+      "status": "Unconfigured",
+      "fallback_state": "fallback: standby",
+      "fallback_active": false,
+      "operation_mode": "PRIMARY_CLOUD",
+      "has_gemini_key": false,
+      "has_groq_key": false,
+      "ollama_available": true,
+      "ollama_model_installed": true,
+      "last_provider_used": "gemini",
+      "last_model_used": "gemini-1.5-flash",
+      "last_latency_ms": 0.0,
+      "last_error": "",
+      "primary_error": null,
+      "fallback_error": null,
+      "error_category": "",
+      "vram_guidance": {
+        "vram_constraint": "4 GB VRAM (Consumer GPU / Laptop / iGPU)",
+        "guidance_summary": "4 GB VRAM is a strict constraint that requires calibrated quantization and context bounds.",
+        "recommended_models": [
+          {
+            "model": "qwen2.5-coder:1.5b",
+            "parameter_count": "1.5 Billion",
+            "quantization": "Q4_K_M",
+            "disk_size_gb": 1.0,
+            "vram_required_gb": 1.6,
+            "context_window": "4096 tokens",
+            "fit_in_4gb_vram": "100% Fits in VRAM (Ultra-fast local execution)",
+            "recommended_for": "Dedicated 4GB GPUs or low-spec hardware"
+          },
+          {
+            "model": "qwen2.5-coder:3b",
+            "parameter_count": "3.0 Billion",
+            "quantization": "Q4_K_M",
+            "disk_size_gb": 1.9,
+            "vram_required_gb": 2.8,
+            "context_window": "4096 tokens",
+            "fit_in_4gb_vram": "100% Fits in VRAM (~2.8 GB total footprint)",
+            "recommended_for": "Sweet spot for code generation within 4GB limit"
+          },
+          {
+            "model": "qwen2.5-coder:7b",
+            "parameter_count": "7.6 Billion",
+            "quantization": "Q4_K_M",
+            "disk_size_gb": 4.7,
+            "vram_required_gb": 5.4,
+            "context_window": "2048 - 4096 tokens",
+            "fit_in_4gb_vram": "Partial Offload (~22 layers on GPU, ~6 layers in System RAM)",
+            "recommended_for": "High-precision code review with mixed GPU/CPU compute"
+          }
+        ],
+        "operational_rules": [
+          "Never download large multi-gigabyte models automatically on startup.",
+          "Keep context window bounded (num_ctx: 2048) to avoid KV cache VRAM overflow.",
+          "If Ollama is unavailable or out-of-memory, fall back to the Offline Heuristic Engine."
+        ]
+      },
+      "circuit_breakers": {
+        "gemini": {
+          "state": "CLOSED",
+          "failure_count": 0,
+          "threshold": 3,
+          "recovery_time_sec": 30.0
+        },
+        "groq": {
+          "state": "CLOSED",
+          "failure_count": 0,
+          "threshold": 3,
+          "recovery_time_sec": 30.0
+        },
+        "ollama": {
+          "state": "CLOSED",
+          "failure_count": 0,
+          "threshold": 3,
+          "recovery_time_sec": 30.0
+        }
+      },
+      "timeout_seconds": 12.0,
+      "retry_budget": 1
+    }
+  },
+  "cpp_regression": {
+    "score": 7.8,
+    "verdict": "FIX REQUIRED",
+    "issues_count": 2,
+    "out_of_bounds_detected": true,
+    "zerodiv_detected": true,
+    "changelog_count": 3,
+    "corrected_code": "#include <iostream>\n#include <vector>\nusing namespace std;\n\nint calculateAverage(const vector<int>& numbers) {\n    int sum = 0;\n\n    for (int i = 0; i < numbers.size(); i++) {\n        sum += numbers[i];\n    }\n\n    return (numbers.size() != 0) ? (sum / numbers.size()) : 0;\n}\n\nint main() {\n    vector<int> marks = {80, 75, 90, 85};\n    cout << \"Average: \" << calculateAverage(marks) << endl;\n    return 0;\n}"
+  },
+  "python_regression": {
+    "score": 8.5,
+    "verdict": "FIX REQUIRED",
+    "issues_count": 2,
+    "unclosed_detected": false,
+    "changelog_count": 1,
+    "code_changed": true,
+    "uses_with_open": true,
+    "corrected_code": "def read_student_names(filename):\n    with open(filename, \"r\", encoding=\"utf-8\") as file:\n        names = []\n\n        for line in file:\n            names.append(line.strip())\n\n    return names\n\n\ndef save_names(filename, names):\n    with open(filename, \"w\", encoding=\"utf-8\") as file:\n\n        for name in names:\n            file.write(name + \"\\n\")\n\n\nstudents = read_student_names(\"students.txt\")\n\nprint(\"Students:\")\nfor student in students:\n    print(student)\n\nsave_names(\"output.txt\", students)"
+  },
+  "language_matrix": {
+    "python": {
+      "mcp_tools": [
+        "pylint (native)",
+        "bandit (native)"
+      ],
+      "findings_count": 11,
+      "health_score": 1.8,
+      "verdict": "FIX REQUIRED",
+      "changelog_count": 5,
+      "code_modified": true,
+      "status": "PASS"
+    },
+    "cpp": {
+      "mcp_tools": [
+        "cppcheck (heuristic fallback)"
+      ],
+      "findings_count": 6,
+      "health_score": 0.5,
+      "verdict": "FIX REQUIRED",
+      "changelog_count": 6,
+      "code_modified": true,
+      "status": "PASS"
+    },
+    "c": {
+      "mcp_tools": [
+        "cppcheck (heuristic fallback)"
+      ],
+      "findings_count": 5,
+      "health_score": 1.0,
+      "verdict": "FIX REQUIRED",
+      "changelog_count": 6,
+      "code_modified": true,
+      "status": "PASS"
+    },
+    "java": {
+      "mcp_tools": [
+        "checkstyle (heuristic fallback)"
+      ],
+      "findings_count": 5,
+      "health_score": 1.8,
+      "verdict": "FIX REQUIRED",
+      "changelog_count": 5,
+      "code_modified": false,
+      "status": "PASS"
+    },
+    "javascript": {
+      "mcp_tools": [
+        "eslint (heuristic fallback)"
+      ],
+      "findings_count": 5,
+      "health_score": 0.8,
+      "verdict": "FIX REQUIRED",
+      "changelog_count": 2,
+      "code_modified": true,
+      "status": "PASS"
+    },
+    "ruby": {
+      "mcp_tools": [
+        "rubocop (heuristic fallback)"
+      ],
+      "findings_count": 2,
+      "health_score": 5.5,
+      "verdict": "FIX REQUIRED",
+      "changelog_count": 1,
+      "code_modified": true,
+      "status": "PARTIAL"
+    }
+  },
+  "metrics": {
+    "detection_accuracy": 75.0,
+    "false_positive_rate": 11.8,
+    "false_negative_rate": 25.0,
+    "autofix_success_rate": 62.5
+  },
+  "frontend_audit": {},
+  "pipeline_audit": {}
+}

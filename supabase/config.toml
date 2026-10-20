@@ -1,0 +1,82 @@
+# A string used to distinguish different Supabase projects on the same host. Defaults to the working
+# directory name when running `supabase init`.
+project_id = "pr_agent"
+
+[api]
+enabled = true
+# Port to use for the API URL.
+port = 54321
+# Schemas to expose in your API. Tables, views and stored procedures in this schema will get API
+# endpoints. `public` is always included.
+schemas = ["public", "storage", "graphql_public"]
+# Extra schemas to add to the search_path of every request.
+extra_search_path = ["public", "extensions"]
+# The maximum number of rows returned from a view, table, or stored procedure.
+max_rows = 1000
+
+[db]
+# Port to use for the local database URL.
+port = 54322
+# Port used by db diff that can be safely ignored.
+shadow_port = 54320
+# The database major version to use. This has to be the same as your remote database's.
+major_version = 15
+
+[db.pooler]
+enabled = false
+# Port to use for the local connection pooler.
+port = 54329
+# Specifies when a server connection can be reused by other clients.
+# Available options: 'session', 'transaction', 'statement'.
+pool_mode = "transaction"
+# Number of pool connections to create per pooler process.
+default_pool_size = 20
+# Maximum number of client connections allowed.
+max_client_conn = 100
+
+[studio]
+enabled = true
+# Port to use for Supabase Studio.
+port = 54323
+# Role to use for Supabase Studio.
+api_role = "anon"
+
+# Email testing server. Emails sent by the local development system will be captured here.
+[inbucket]
+enabled = true
+# Port to use for the Inbucket web interface.
+port = 54324
+# Port to use for the Inbucket SMTP service.
+smtp_port = 54325
+# Port to use for the Inbucket POP3 service.
+pop3_port = 54326
+
+[storage]
+enabled = true
+# The maximum file size allowed (e.g. "5MB", "500KB").
+file_size_limit = "50MiB"
+
+[auth]
+enabled = true
+# The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
+# in emails.
+site_url = "http://127.0.0.1:5173"
+# A list of *exact* URLs that auth will redirect to after login, or during password reset.
+additional_redirect_urls = ["https://127.0.0.1:5173", "http://localhost:5173"]
+# How long tokens are valid for, in seconds. Defaults to 3600 (1 hour).
+jwt_expiry = 3600
+# If disabled, new users need to be invited or created via the service role API.
+enable_signup = true
+
+[auth.email]
+# Allow users to sign in with an email address.
+enable_signup = true
+# If enabled, a user will be required to confirm any email change.
+double_confirm_changes = true
+# If enabled, users need to confirm their email address before signing in.
+enable_confirmations = false
+
+[analytics]
+enabled = false
+port = 54327
+vector_port = 54328
