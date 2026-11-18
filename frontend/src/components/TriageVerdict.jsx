@@ -1,12 +1,14 @@
 import React, { useState, useEffect, memo } from 'react';
 import { 
   AlertTriangle, CheckCircle2, ShieldAlert, Wrench, Shield, 
-  ArrowRight, Activity, Info, HelpCircle, Check, Terminal 
+  ArrowRight, Activity, Info, HelpCircle, Check, Terminal, Sparkles
 } from 'lucide-react';
 
 function TriageVerdict({
   healthScore = 10.0,
   postFixScore = null,
+  preFixScore = null,
+  appliedToEditor = false,
   verdict = 'PENDING',
   summary = 'Run the review pipeline to execute static analysis, RAG grounding, and multi-agent triage.',
   counts = { critical: 0, high: 0, medium: 0, low: 0, informational: 0 },
@@ -35,23 +37,30 @@ function TriageVerdict({
   const isDegraded = ['ANALYZER UNAVAILABLE', 'MCP UNAVAILABLE', 'DEGRADED', 'RAG UNAVAILABLE', 'DEPENDENCY MISSING', 'LLM UNAVAILABLE'].some(v => (verdict || '').includes(v));
   const totalDetected = unresolvedCount + resolvedCount;
 
+  // Authoritative Score: if postFixScore is present, use it as the new correct code score!
+  const hasAutoCorrectScore = (postFixScore !== null && postFixScore !== undefined);
+  const displayScore = hasAutoCorrectScore ? postFixScore : healthScore;
+  const initialScore = (preFixScore !== null && preFixScore !== undefined) ? preFixScore : healthScore;
+  const hasScoreImproved = hasRun && initialScore !== null && displayScore > initialScore;
+  const scoreDelta = hasScoreImproved ? (displayScore - initialScore) : 0;
+
   const scoreColor = !hasRun
     ? 'text-[#606973]'
-    : isClean
+    : isClean || displayScore >= 9.5
     ? 'text-[#1B5E36]'
     : isDegraded
     ? 'text-[#92400E]'
     : isNeedsReview
     ? 'text-[#92400E]'
-    : healthScore >= 8.0
+    : displayScore >= 8.0
     ? 'text-[#1B5E36]'
-    : healthScore >= 5.0
+    : displayScore >= 5.0
     ? 'text-[#92400E]'
     : 'text-[#991B1B]';
 
   const cardBorder = !hasRun
     ? 'border-[#E2E6EC]'
-    : isClean
+    : isClean || displayScore >= 9.5
     ? 'border-[#C4E7D0]'
     : isDegraded
     ? 'border-[#FDE68A]'
@@ -72,9 +81,25 @@ function TriageVerdict({
           <div className="flex flex-wrap items-baseline gap-5 sm:gap-8 mb-4">
             <div>
               <div className="flex items-center space-x-2 mb-1.5">
-                <span className="text-xs font-mono font-bold uppercase tracking-wider text-[#606973] block">
-                  Codebase Health Score
+                <span className={`text-xs font-mono font-bold uppercase tracking-wider block ${
+                  appliedToEditor
+                    ? 'text-[#166534]'
+                    : hasAutoCorrectScore && hasScoreImproved
+                    ? 'text-[#1B5E36]'
+                    : 'text-[#606973]'
+                }`}>
+                  {appliedToEditor
+                    ? 'Active Editor Code Score'
+                    : hasAutoCorrectScore && hasScoreImproved
+                    ? 'New Correct Code Score'
+                    : 'Codebase Health Score'}
                 </span>
+                {(hasAutoCorrectScore || remediationStatus === 'SUCCESS') && (
+                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#DDF2E5] text-[#1B5E36] border border-[#C4E7D0]">
+                    <Sparkles className="w-3 h-3 text-[#10B981]" />
+                    <span>{appliedToEditor ? 'Applied to Editor' : 'Auto-Corrected'}</span>
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => setShowPolicyModal(true)}
@@ -89,14 +114,29 @@ function TriageVerdict({
               <div className="flex items-baseline space-x-3">
                 <span 
                   className={`text-6xl sm:text-7xl font-black font-mono tracking-tight leading-none ${scoreColor}`}
-                  aria-label={hasRun ? `Health Score: ${healthScore.toFixed(1)} out of 10` : 'Health score pending'}
+                  aria-label={hasRun ? `Health Score: ${displayScore.toFixed(1)} out of 10` : 'Health score pending'}
                 >
-                  {hasRun ? healthScore.toFixed(1) : '--'}
+                  {hasRun ? displayScore.toFixed(1) : '--'}
                 </span>
                 <span className="text-2xl sm:text-3xl font-mono text-[#606973] font-semibold" aria-hidden="true">
                   / 10.0
                 </span>
               </div>
+
+              {/* Dynamic Score Improvement Transition Pill */}
+              {hasRun && hasScoreImproved && (
+                <div className="mt-2.5 inline-flex items-center space-x-2 text-xs font-mono bg-[#EBF7EE] text-[#166534] border border-[#BDE0D7] px-3 py-1.5 rounded-xl font-bold shadow-2xs animate-in fade-in">
+                  <Sparkles className="w-3.5 h-3.5 text-[#10B981]" />
+                  <span>Initial:</span>
+                  <span className="line-through text-[#991B1B] font-extrabold">{initialScore.toFixed(1)}</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#166534]" />
+                  <span>New Score:</span>
+                  <span className="text-[#15803D] font-black">{displayScore.toFixed(1)}/10.0</span>
+                  <span className="bg-[#10B981] text-white px-1.5 py-0.5 rounded text-[10px] font-black tracking-wide uppercase">
+                    +{scoreDelta.toFixed(1)} pts
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Verdict Badge & Remediation Chip */}
@@ -144,7 +184,7 @@ function TriageVerdict({
               )}
 
               {/* Post-Fix Score Transition if remediated */}
-              {hasRun && postFixScore !== null && postFixScore !== undefined && postFixScore !== healthScore && (
+              {hasRun && postFixScore !== null && postFixScore !== undefined && !hasScoreImproved && postFixScore !== healthScore && (
                 <div className="flex items-center space-x-2 text-xs sm:text-sm font-mono bg-[#DDF2E5] text-[#1B5E36] border border-[#C4E7D0] px-3 py-1.5 rounded-xl font-bold">
                   <span>Post-Fix:</span>
                   <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />

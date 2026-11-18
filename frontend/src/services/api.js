@@ -7,7 +7,10 @@
  * - Request cancellation via AbortSignal
  */
 
-const API_BASE = '/api';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+export { API_BASE_URL };
+
+const API_BASE = `${API_BASE_URL}/api`;
 
 // In-flight request pool for deduplicating identical simultaneous network calls
 const inFlightRequests = new Map();
@@ -26,7 +29,7 @@ export function normalizeErrorMessage(err, fallback = 'Operation failed') {
   const msg = typeof err === 'string' ? err : (err.message || String(err));
   
   if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed')) {
-    return 'Unable to reach the PR Agent backend service (http://127.0.0.1:8000). Please ensure the backend server is running.';
+    return `Unable to reach the PR Agent backend service at ${API_BASE_URL}. Please ensure the backend server is running and CORS allows this domain.`;
   }
   if (msg.includes('413') || msg.includes('too large') || msg.includes('Payload too large')) {
     return 'Source code file exceeds maximum size limit (5MB / 250,000 characters). Please reduce the file size and try again.';

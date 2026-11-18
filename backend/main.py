@@ -78,17 +78,28 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for configured frontend origins and local development
-allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
-configured_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+# Enable CORS for configured frontend origins (Render/Vercel) and local development
+raw_origins = os.getenv("FRONTEND_ORIGINS", "") or os.getenv("ALLOWED_ORIGINS", "")
+allowed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+# Sensible default origins for local development when FRONTEND_ORIGINS is not set
+if not allowed_origins:
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+allow_all = "*" in allowed_origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=configured_origins if configured_origins else [],
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"] if allow_all else allowed_origins,
+    allow_origin_regex=None if allow_all else r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=not allow_all,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
 
 def sanitize_error(msg: Any) -> str:
@@ -181,6 +192,8 @@ def root():
     }
 
 
+@app.get("/health")
+@app.get("/api/health")
 @app.get("/health/liveness")
 @app.get("/api/health/liveness")
 def health_liveness():

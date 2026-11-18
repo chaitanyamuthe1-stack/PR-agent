@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { 
   Copy, Download, Check, SplitSquareVertical, Code2, GitCommit, 
-  CheckCircle2, Wrench, RefreshCw, XCircle, Eye
+  CheckCircle2, Wrench, RefreshCw, XCircle, Eye, Sparkles
 } from 'lucide-react';
 import { downloadCorrectedCode, downloadAuditReport } from '../services/api';
 
@@ -78,9 +78,11 @@ function CodeDiffViewer({
   targetedLine = null,
   onApplyFix = null,
   onRecheck = null,
+  onApplyToEditor = null,
   remediating = false,
   rechecking = false,
-  fixStateMessage = null
+  fixStateMessage = null,
+  postFixScore = null
 }) {
   const [viewMode, setViewMode] = useState('side-by-side');
   const [copied, setCopied] = useState(false);
@@ -266,6 +268,26 @@ function CodeDiffViewer({
                 </>
               )}
             </button>
+          )}
+
+          {onApplyToEditor && isCodeModified && (
+            <div className="flex items-center space-x-2">
+              {postFixScore !== null && postFixScore !== undefined && (
+                <div className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#DDF2E5] border border-[#C4E7D0] text-[#1B5E36] font-mono text-xs font-bold shadow-2xs">
+                  <Sparkles className="w-3.5 h-3.5 text-[#10B981]" />
+                  <span>Corrected Score: {postFixScore.toFixed(1)}/10.0</span>
+                </div>
+              )}
+              <button
+                onClick={() => onApplyToEditor(correctedCode || originalCode)}
+                disabled={remediating || rechecking}
+                className="dev-btn-primary px-4 py-2 text-xs sm:text-sm font-bold uppercase tracking-wider cursor-pointer bg-[#10B981] hover:bg-[#059669] text-white border-none flex items-center space-x-1.5 shadow-xs transition-colors"
+                title="Apply auto-corrected code to main editor"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Apply to Editor</span>
+              </button>
+            </div>
           )}
 
           {onRecheck && (

@@ -84,6 +84,12 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
   // Single Authoritative Review State
   const [reviewState, setReviewState] = useState(null);
 
+  // Auto-Correct from Code Check, Given File, & Upload State Tracking
+  const [autoCorrectOnReview, setAutoCorrectOnReview] = useState(false);
+  const [autoCorrectOnUpload, setAutoCorrectOnUpload] = useState(false);
+  const [previousCodeBeforeApply, setPreviousCodeBeforeApply] = useState(null);
+  const [appliedNotice, setAppliedNotice] = useState(false);
+
   // Unmount request cancellation cleanup
   useEffect(() => {
     return () => {
@@ -103,6 +109,7 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   const fileInputRef = useRef(null);
+  const autoFixFileInputRef = useRef(null);
   const editorRef = useRef(null);
   const gutterRef = useRef(null);
   const textareaRef = useRef(null);
@@ -134,11 +141,15 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
 
   // Tab key indentation support & Ctrl+Enter execution shortcut
   const handleKeyDown = (e) => {
-    // Keyboard Shortcut Ctrl+Enter / Cmd+Enter to execute review
+    // Keyboard Shortcut Ctrl+Enter / Cmd+Enter to execute review, Shift+Ctrl+Enter for Auto-Correct
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       if (!loadingReview && !remediating && !rechecking && code.trim()) {
-        handleRunReview();
+        if (e.shiftKey) {
+          handleAutoCorrectClick();
+        } else {
+          handleRunReview();
+        }
       }
       return;
     }
@@ -265,87 +276,6 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
     }
   }, [requestedSampleLang, samples, handleLoadSample]);
 
-  // File Upload processor
-  const processUploadedFile = useCallback(async (file) => {
-    if (!file) return;
-
-    currentSessionIdRef.current++;
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setLoadingReview(false);
-    setRemediating(false);
-    setRechecking(false);
-    setReviewState(null);
-
-    try {
-      const res = await uploadSourceFile(file);
-      let loadedCode = res.code || '';
-      if (loadedCode.length > MAX_INPUT_CHARS) {
-        loadedCode = loadedCode.slice(0, MAX_INPUT_CHARS);
-        setFixStateMessage(`Input bounded to ${MAX_INPUT_CHARS.toLocaleString()} characters.`);
-      }
-      setCode(loadedCode);
-      setFilename(res.filename);
-      setLanguage(res.language);
-      setFileUploadInfo({
-        size: file.size,
-        status: 'Uploaded successfully'
-      });
-      setReviewError(null);
-    } catch (err) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        let text = event.target.result || '';
-        if (text.length > MAX_INPUT_CHARS) {
-          text = text.slice(0, MAX_INPUT_CHARS);
-          setFixStateMessage(`Input bounded to ${MAX_INPUT_CHARS.toLocaleString()} characters.`);
-        }
-        setCode(text);
-        setFilename(file.name);
-        const inferred = inferLanguageFromFilename(file.name) || 'python';
-        setLanguage(inferred);
-        setFileUploadInfo({
-          size: file.size,
-          status: 'Loaded local file'
-        });
-        setReviewError(null);
-      };
-      reader.readAsText(file);
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  }, []);
-
-  const handleFileUpload = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (file) processUploadedFile(file);
-  }, [processUploadedFile]);
-
-  // Drag and Drop handlers
-  const handleDragOver = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingOver(false);
-  }, []);
-
-  const handleDrop = useCallback(async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      await processUploadedFile(file);
-    }
-  }, [processUploadedFile]);
-
   // Cancel / Safely stop active work
   const handleCancelExecution = useCallback(() => {
     currentSessionIdRef.current++;
@@ -359,77 +289,6 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
     setReviewError("Execution safely stopped by user.");
   }, []);
 
-  // PRIMARY ACTION: RUN CODE REVIEW
-  const handleRunReview = useCallback(async () => {
-    if (loadingReview || remediating || rechecking) return;
-    if (!code || !code.trim()) {
-      setReviewError("Source code cannot be empty. Upload a file or select a sample.");
-      return;
-    }
-
-    const thisSessionId = ++currentSessionIdRef.current;
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    setLoadingReview(true);
-    setReviewError(null);
-    setFixStateMessage(null);
-    setTargetedLine(null);
-
-    try {
-      const result = await runReview({
-        code,
-        language,
-        filename,
-        provider: gatewayStatus?.provider
-      }, controller.signal);
-
-      // Guard: Discard stale response
-      if (thisSessionId !== currentSessionIdRef.current) {
-        console.warn(`[PR Agent] Discarding stale review response from session #${thisSessionId}.`);
-        return;
-      }
-
-      // Synchronize Authoritative State
-      const issues = (result.issues || []).map((iss, i) => ({
-        ...iss,
-        id: iss.id || `${(iss.category || 'DEFECT').toUpperCase()}-${String(i + 1).padStart(3, '0')}`,
-        ignored: false,
-        resolved: Boolean(iss.resolved)
-      }));
-
-      const unresolved = issues.filter(i => !i.resolved && !i.ignored);
-      const resolved = issues.filter(i => i.resolved);
-      const verdict = unresolved.length > 0 ? 'FIX REQUIRED' : 'CLEAN';
-
-      setReviewState({
-        ...result,
-        issues,
-        unresolved_count: unresolved.length,
-        resolved_count: resolved.length,
-        verdict: verdict,
-        health_score: result.health_score ?? (unresolved.length > 0 ? 3.5 : 10.0),
-        original_code: code,
-        corrected_code: result.corrected_code || code,
-        remediation_status: result.remediation_status || 'NOT_REQUIRED',
-        auto_fix_failure: Boolean(result.auto_fix_failure)
-      });
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        setReviewError("Review execution cancelled by user.");
-      } else {
-        setReviewError(`Review failed: ${normalizeErrorMessage(err)}`);
-      }
-    } finally {
-      if (thisSessionId === currentSessionIdRef.current) {
-        setLoadingReview(false);
-        abortControllerRef.current = null;
-      }
-    }
-  }, [code, filename, gatewayStatus, language, loadingReview, remediating, rechecking]);
 
   // RE-CHECK PIPELINE
   const executeRecheckPipeline = useCallback(async (origCode, corrCode, existingChangelog = null, targetSessionId = null) => {
@@ -465,22 +324,27 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
       const finalVerdict = unresolved.length === 0 ? 'CLEAN' : 'FIX REQUIRED';
       const postFixScore = unresolved.length === 0 ? 10.0 : (recheckRes.post_fix_score || recheckRes.health_score || 7.5);
 
-      setReviewState(prev => ({
-        ...(prev || {}),
-        ...recheckRes,
-        issues: updatedIssues,
-        unresolved_count: unresolved.length,
-        resolved_count: resolved.length,
-        health_score: prev?.health_score || recheckRes.health_score,
-        post_fix_score: postFixScore,
-        verdict: finalVerdict,
-        corrected_code: corrCode,
-        changelog: existingChangelog || prev?.changelog || recheckRes.changelog || [],
-        remediation_status: unresolved.length === 0 ? 'SUCCESS' : 'PARTIAL',
-        auto_fix_failure: unresolved.length > 0
-      }));
+      setReviewState(prev => {
+        const initialScore = prev?.pre_fix_score ?? prev?.initial_health_score ?? prev?.health_score ?? 3.5;
+        return {
+          ...(prev || {}),
+          ...recheckRes,
+          issues: updatedIssues,
+          unresolved_count: unresolved.length,
+          resolved_count: resolved.length,
+          pre_fix_score: initialScore,
+          initial_health_score: initialScore,
+          health_score: postFixScore,
+          post_fix_score: postFixScore,
+          verdict: finalVerdict,
+          corrected_code: corrCode,
+          changelog: existingChangelog || prev?.changelog || recheckRes.changelog || [],
+          remediation_status: unresolved.length === 0 ? 'SUCCESS' : 'PARTIAL',
+          auto_fix_failure: unresolved.length > 0
+        };
+      });
 
-      setFixStateMessage(unresolved.length === 0 ? "RE-CHECK PASSED: Codebase verified CLEAN." : `RE-CHECK COMPLETE: ${unresolved.length} remaining issue(s).`);
+      setFixStateMessage(unresolved.length === 0 ? `RE-CHECK PASSED: Codebase verified CLEAN (Health Score: ${postFixScore.toFixed(1)}/10.0).` : `RE-CHECK COMPLETE: ${unresolved.length} remaining issue(s).`);
     } catch (err) {
       if (err.name === 'AbortError') {
         setReviewError("Re-check cancelled by user.");
@@ -495,15 +359,20 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
     }
   }, [filename, gatewayStatus, language, reviewState]);
 
-  // APPLY FIX HANDLER
-  const handleApplyFix = useCallback(async () => {
-    if (loadingReview || remediating || rechecking) return;
-    if (!reviewState && !code.trim()) {
+  // APPLY FIX HANDLER (AUTO-CORRECT)
+  const handleApplyFix = useCallback(async (customIssues = null, customReviewState = null, overrideCode = null, overrideLang = null, overrideFilename = null) => {
+    if (remediating || rechecking) return;
+    const activeState = customReviewState || reviewState;
+    const targetCode = overrideCode !== null ? overrideCode : (activeState?.original_code || code);
+    const targetLang = overrideLang !== null ? overrideLang : (activeState?.language || language);
+    const targetFilename = overrideFilename !== null ? overrideFilename : (activeState?.filename || filename);
+
+    if (!targetCode || !targetCode.trim()) {
       setReviewError("Please run a review before applying fixes.");
       return;
     }
 
-    const currentIssues = reviewState?.issues || [];
+    const currentIssues = customIssues || activeState?.issues || [];
     const actionableIssues = currentIssues.filter(i => !i.ignored && !i.resolved);
 
     if (actionableIssues.length === 0 && currentIssues.length > 0) {
@@ -520,21 +389,21 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
 
     setRemediating(true);
     setReviewError(null);
-    setFixStateMessage(null);
+    setFixStateMessage("Executing Coder Agent auto-remediation...");
 
     try {
       const remResult = await remediateCode({
-        code: reviewState?.original_code || code,
-        language: reviewState?.language || language,
-        filename: reviewState?.filename || filename,
+        code: targetCode,
+        language: targetLang,
+        filename: targetFilename,
         issues: actionableIssues,
         provider: gatewayStatus?.provider,
-        review_id: reviewState?.review_id
+        review_id: activeState?.review_id
       }, controller.signal);
 
       if (thisSessionId !== currentSessionIdRef.current) return;
 
-      const wasModified = Boolean(remResult.modified && remResult.corrected_code && remResult.corrected_code.trim() !== (reviewState?.original_code || code).trim());
+      const wasModified = Boolean(remResult.modified && remResult.corrected_code && remResult.corrected_code.trim() !== targetCode.trim());
 
       if (!wasModified) {
         setFixStateMessage("Coder Agent was unable to produce automated modifications for remaining defects.");
@@ -550,7 +419,7 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
       const newChangelog = remResult.changelog || [];
       
       await executeRecheckPipeline(
-        reviewState?.original_code || code,
+        targetCode,
         remResult.corrected_code,
         newChangelog,
         thisSessionId
@@ -568,7 +437,302 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
         abortControllerRef.current = null;
       }
     }
-  }, [code, executeRecheckPipeline, filename, gatewayStatus, language, loadingReview, remediating, rechecking, reviewState]);
+  }, [code, executeRecheckPipeline, filename, gatewayStatus, language, remediating, rechecking, reviewState]);
+
+  // PRIMARY ACTION: RUN CODE REVIEW (CODE CHECK) WITH INTEGRATED AUTO-CORRECT OPTION
+  const handleRunReview = useCallback(async (autoFixOverride = null, overrideCode = null, overrideLang = null, overrideFilename = null) => {
+    if (loadingReview || remediating || rechecking) return;
+    const targetCode = overrideCode !== null ? overrideCode : code;
+    const targetLang = overrideLang !== null ? overrideLang : language;
+    const targetFilename = overrideFilename !== null ? overrideFilename : filename;
+
+    if (!targetCode || !targetCode.trim()) {
+      setReviewError("Source code cannot be empty. Upload a file or select a sample.");
+      return;
+    }
+
+    const shouldAutoFix = autoFixOverride !== null ? autoFixOverride : autoCorrectOnReview;
+
+    const thisSessionId = ++currentSessionIdRef.current;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    setLoadingReview(true);
+    setReviewError(null);
+    setFixStateMessage(shouldAutoFix ? "Analyzing code and preparing auto-correction..." : null);
+    setTargetedLine(null);
+
+    try {
+      const result = await runReview({
+        code: targetCode,
+        language: targetLang,
+        filename: targetFilename,
+        provider: gatewayStatus?.provider
+      }, controller.signal);
+
+      // Guard: Discard stale response
+      if (thisSessionId !== currentSessionIdRef.current) {
+        console.warn(`[PR Agent] Discarding stale review response from session #${thisSessionId}.`);
+        return;
+      }
+
+      // Synchronize Authoritative State
+      const issues = (result.issues || []).map((iss, i) => ({
+        ...iss,
+        id: iss.id || `${(iss.category || 'DEFECT').toUpperCase()}-${String(i + 1).padStart(3, '0')}`,
+        ignored: false,
+        resolved: Boolean(iss.resolved)
+      }));
+
+      const unresolved = issues.filter(i => !i.resolved && !i.ignored);
+      const resolved = issues.filter(i => i.resolved);
+      const verdict = unresolved.length > 0 ? 'FIX REQUIRED' : 'CLEAN';
+
+      const initialReviewState = {
+        ...result,
+        issues,
+        unresolved_count: unresolved.length,
+        resolved_count: resolved.length,
+        verdict: verdict,
+        health_score: result.health_score ?? (unresolved.length > 0 ? 3.5 : 10.0),
+        original_code: targetCode,
+        corrected_code: result.corrected_code || targetCode,
+        remediation_status: result.remediation_status || 'NOT_REQUIRED',
+        auto_fix_failure: Boolean(result.auto_fix_failure)
+      };
+
+      setReviewState(initialReviewState);
+
+      // If Auto-Correct was requested from Code Check, Given File, or Upload, immediately execute Coder Agent remediation!
+      if (shouldAutoFix && unresolved.length > 0) {
+        setLoadingReview(false);
+        await handleApplyFix(unresolved, initialReviewState, targetCode, targetLang, targetFilename);
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        setReviewError("Review execution cancelled by user.");
+      } else {
+        setReviewError(`Review failed: ${normalizeErrorMessage(err)}`);
+      }
+    } finally {
+      if (thisSessionId === currentSessionIdRef.current) {
+        setLoadingReview(false);
+        abortControllerRef.current = null;
+      }
+    }
+  }, [autoCorrectOnReview, code, filename, gatewayStatus, handleApplyFix, language, loadingReview, remediating, rechecking]);
+
+  // File Upload processor (supports immediate auto-correct for uploaded files)
+  const processUploadedFile = useCallback(async (file, autoCorrect = false) => {
+    if (!file) return;
+
+    currentSessionIdRef.current++;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setLoadingReview(false);
+    setRemediating(false);
+    setRechecking(false);
+    setReviewState(null);
+
+    const shouldAutoFix = autoCorrect || autoCorrectOnUpload;
+
+    try {
+      const res = await uploadSourceFile(file);
+      let loadedCode = res.code || '';
+      if (loadedCode.length > MAX_INPUT_CHARS) {
+        loadedCode = loadedCode.slice(0, MAX_INPUT_CHARS);
+        setFixStateMessage(`Input bounded to ${MAX_INPUT_CHARS.toLocaleString()} characters.`);
+      }
+      setCode(loadedCode);
+      setFilename(res.filename);
+      setLanguage(res.language);
+      setFileUploadInfo({
+        size: file.size,
+        status: shouldAutoFix ? 'Uploaded — Auto-correcting...' : 'Uploaded successfully'
+      });
+      setReviewError(null);
+
+      if (shouldAutoFix) {
+        setFixStateMessage(`Auto-correcting uploaded file ${res.filename}...`);
+        setTimeout(() => {
+          handleRunReview(true, loadedCode, res.language, res.filename);
+        }, 50);
+      }
+    } catch (err) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        let text = event.target.result || '';
+        if (text.length > MAX_INPUT_CHARS) {
+          text = text.slice(0, MAX_INPUT_CHARS);
+          setFixStateMessage(`Input bounded to ${MAX_INPUT_CHARS.toLocaleString()} characters.`);
+        }
+        const inferred = inferLanguageFromFilename(file.name) || 'python';
+        setCode(text);
+        setFilename(file.name);
+        setLanguage(inferred);
+        setFileUploadInfo({
+          size: file.size,
+          status: shouldAutoFix ? 'Loaded — Auto-correcting...' : 'Loaded local file'
+        });
+        setReviewError(null);
+
+        if (shouldAutoFix) {
+          setFixStateMessage(`Auto-correcting uploaded file ${file.name}...`);
+          setTimeout(() => {
+            handleRunReview(true, text, inferred, file.name);
+          }, 50);
+        }
+      };
+      reader.readAsText(file);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (autoFixFileInputRef.current) autoFixFileInputRef.current.value = '';
+    }
+  }, [autoCorrectOnUpload, handleRunReview]);
+
+  const handleFileUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (file) processUploadedFile(file, false);
+  }, [processUploadedFile]);
+
+  const handleAutoFixFileUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (file) processUploadedFile(file, true);
+  }, [processUploadedFile]);
+
+  // Drag and Drop handlers (with auto-correct support)
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+  }, []);
+
+  const handleDrop = useCallback(async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      await processUploadedFile(file, autoCorrectOnUpload);
+    }
+  }, [autoCorrectOnUpload, processUploadedFile]);
+
+  // Auto-correct the given file currently in editor
+  const handleAutoCorrectFile = useCallback(() => {
+    if (loadingReview || remediating || rechecking || !code.trim()) return;
+    if (reviewState && reviewState.issues && reviewState.original_code === code && reviewState.unresolved_count > 0) {
+      handleApplyFix();
+    } else {
+      handleRunReview(true, code, language, filename);
+    }
+  }, [code, filename, handleApplyFix, handleRunReview, language, loadingReview, rechecking, remediating, reviewState]);
+
+  // Load a given benchmark sample and immediately auto-correct it
+  const handleLoadSampleAndAutoCorrect = useCallback((langKey) => {
+    const targetLang = langKey || language;
+    const sample = samples[targetLang];
+    if (sample) {
+      currentSessionIdRef.current++;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      setLoadingReview(false);
+      setRemediating(false);
+      setRechecking(false);
+
+      const targetFilename = sample.filename || `sample_${targetLang}`;
+      setCode(sample.code);
+      setFilename(targetFilename);
+      setLanguage(targetLang);
+      setFileUploadInfo({
+        size: sample.code.length,
+        status: 'Sample loaded — Auto-correcting...'
+      });
+      setReviewState(null);
+      setReviewError(null);
+      setFixStateMessage(`Auto-correcting ${targetLang.toUpperCase()} given sample...`);
+      setTimeout(() => {
+        handleRunReview(true, sample.code, targetLang, targetFilename);
+      }, 50);
+    }
+  }, [handleRunReview, language, samples]);
+
+  // Dedicated Auto-Correct trigger from Code Check
+  const handleAutoCorrectClick = useCallback(() => {
+    if (loadingReview || remediating || rechecking) return;
+    if (reviewState && reviewState.issues && reviewState.original_code === code && reviewState.unresolved_count > 0) {
+      handleApplyFix();
+    } else {
+      handleRunReview(true);
+    }
+  }, [code, handleApplyFix, handleRunReview, loadingReview, rechecking, remediating, reviewState]);
+
+  // Detect whether auto-correct has modified the code
+  const hasAutoCorrectChanges = useMemo(() => {
+    if (!reviewState?.corrected_code) return false;
+    const origClean = (code || '').trim();
+    const corrClean = reviewState.corrected_code.trim();
+    return origClean !== corrClean && (
+      (reviewState.changelog && reviewState.changelog.length > 0) ||
+      reviewState.remediation_status === 'SUCCESS' ||
+      reviewState.remediation_status === 'PARTIAL'
+    );
+  }, [code, reviewState]);
+
+  // Apply auto-corrected code to editor ("after the change of auto correct")
+  // Apply auto-corrected code to editor ("after the change of auto correct")
+  const handleApplyToEditor = useCallback((targetCode = null) => {
+    const codeToApply = targetCode || reviewState?.corrected_code;
+    if (!codeToApply) return;
+    const newScore = reviewState?.post_fix_score ?? reviewState?.health_score ?? 10.0;
+    setPreviousCodeBeforeApply(code);
+    setCode(codeToApply);
+    setAppliedNotice(true);
+    setFixStateMessage(`Auto-corrected code applied to editor! Health score updated to: ${newScore.toFixed(1)} / 10.0.`);
+    setReviewState(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        original_code: codeToApply,
+        health_score: newScore,
+        verdict: prev.unresolved_count === 0 ? 'CLEAN' : prev.verdict,
+        applied_to_editor: true
+      };
+    });
+    setTimeout(() => setAppliedNotice(false), 6000);
+  }, [code, reviewState]);
+
+  // Revert applied code to pre-correction version
+  const handleRevertAppliedCode = useCallback(() => {
+    if (previousCodeBeforeApply !== null) {
+      setCode(previousCodeBeforeApply);
+      setReviewState(prev => {
+        if (!prev) return null;
+        const revertScore = prev.pre_fix_score ?? prev.initial_health_score ?? 3.5;
+        return {
+          ...prev,
+          original_code: previousCodeBeforeApply,
+          health_score: revertScore,
+          applied_to_editor: false
+        };
+      });
+      setPreviousCodeBeforeApply(null);
+      setAppliedNotice(false);
+      setFixStateMessage("Reverted editor code to pre-correction version.");
+    }
+  }, [previousCodeBeforeApply]);
 
   const handleManualRecheck = useCallback(() => {
     if (loadingReview || remediating || rechecking) return;
@@ -824,7 +988,18 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
               <option value="ruby">Sample: Ruby (SQLi, Deserialization)</option>
             </select>
 
-            {/* Upload Button */}
+            {/* Auto-Correct Given File Button */}
+            <button
+              onClick={handleAutoCorrectFile}
+              disabled={isAnyExecuting || !code || !code.trim()}
+              className="dev-btn-secondary px-3 py-1.5 text-xs sm:text-sm font-semibold text-[#142B4A] hover:bg-[#DCE7F5] border-[#B8D0EC] cursor-pointer disabled:opacity-40 shadow-2xs flex items-center space-x-1.5"
+              title="Run AI review and auto-correction on the given file in editor"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-[#142B4A]" />
+              <span>Auto-Correct File</span>
+            </button>
+
+            {/* Standard Upload Button */}
             <input
               type="file"
               ref={fileInputRef}
@@ -835,11 +1010,29 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isAnyExecuting}
-              className="dev-btn-secondary px-3.5 py-1.5 text-xs sm:text-sm font-medium cursor-pointer disabled:opacity-40"
-              title="Upload file or drag-and-drop into editor"
+              className="dev-btn-secondary px-3 py-1.5 text-xs sm:text-sm font-medium cursor-pointer disabled:opacity-40 shadow-2xs flex items-center space-x-1.5"
+              title="Upload file into editor without automatic review"
             >
-              <Upload className="w-4 h-4 text-[#606973]" />
+              <Upload className="w-3.5 h-3.5 text-[#606973]" />
               <span>Upload</span>
+            </button>
+
+            {/* Upload & Auto-Correct Button */}
+            <input
+              type="file"
+              ref={autoFixFileInputRef}
+              accept=".py,.cpp,.c,.h,.java,.js,.jsx,.rb"
+              onChange={handleAutoFixFileUpload}
+              className="hidden"
+            />
+            <button
+              onClick={() => autoFixFileInputRef.current?.click()}
+              disabled={isAnyExecuting}
+              className="bg-[#142B4A] hover:bg-[#1E3E6B] text-white border border-[#142B4A] px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-semibold flex items-center space-x-1.5 cursor-pointer disabled:opacity-40 shadow-xs transition-colors"
+              title="Upload any file and immediately auto-correct issues with AI"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-white" />
+              <span>Upload &amp; Auto-Correct</span>
             </button>
           </div>
 
@@ -952,6 +1145,21 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
                   </>
                 )}
               </div>
+
+              {/* Auto-Correct on Upload & Drop Toggle */}
+              <label 
+                className="flex items-center space-x-2 text-xs font-semibold text-[#142B4A] cursor-pointer select-none bg-white border border-[#E2E6EC] hover:border-[#142B4A] px-3 py-1.5 rounded-lg transition-colors shadow-2xs"
+                title="Automatically trigger AI analysis and remediation whenever a file is uploaded or dragged & dropped"
+              >
+                <input
+                  type="checkbox"
+                  checked={autoCorrectOnUpload}
+                  onChange={(e) => setAutoCorrectOnUpload(e.target.checked)}
+                  className="w-3.5 h-3.5 text-[#142B4A] rounded border-[#CBD5E1] focus:ring-[#142B4A] cursor-pointer"
+                />
+                <Sparkles className="w-3.5 h-3.5 text-[#142B4A]" />
+                <span>Auto-Correct on Upload / Drop</span>
+              </label>
             </div>
 
             {/* Reset Workspace Action */}
@@ -979,15 +1187,26 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
                 Contains ground-truth vulnerabilities for audit evaluation.
               </span>
             </div>
-            {onOpenBenchmark && (
+            <div className="flex items-center space-x-2">
               <button
-                onClick={onOpenBenchmark}
-                className="text-xs font-semibold text-[#92400E] hover:text-[#78350F] flex items-center space-x-1 underline cursor-pointer"
+                onClick={() => handleLoadSampleAndAutoCorrect(language)}
+                disabled={isAnyExecuting}
+                className="bg-[#92400E] hover:bg-[#78350F] text-white px-2.5 py-1 rounded-lg font-semibold flex items-center space-x-1 cursor-pointer transition-colors disabled:opacity-40 shadow-xs"
+                title="Auto-correct this benchmark sample immediately"
               >
-                <span>Benchmark Suite</span>
-                <ArrowUpRight className="w-3.5 h-3.5" />
+                <Sparkles className="w-3 h-3 text-[#FDE68A]" />
+                <span>Auto-Correct Sample</span>
               </button>
-            )}
+              {onOpenBenchmark && (
+                <button
+                  onClick={onOpenBenchmark}
+                  className="text-xs font-semibold text-[#92400E] hover:text-[#78350F] flex items-center space-x-1 underline cursor-pointer"
+                >
+                  <span>Benchmark Suite</span>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -1005,7 +1224,9 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
             <div className="absolute inset-0 z-30 bg-[#142B4A]/95 border-2 border-dashed border-[#DCE7F5] backdrop-blur-xs flex flex-col items-center justify-center pointer-events-none animate-in fade-in">
               <Upload className="w-12 h-12 text-[#DCE7F5] animate-bounce mb-2" />
               <span className="text-base font-bold text-white uppercase tracking-wider">Drop source file to import</span>
-              <span className="text-xs text-[#DCE7F5]/80 mt-1 font-mono">Supports Python, C, C++, Java, JavaScript, Ruby</span>
+              <span className="text-xs text-[#DCE7F5]/80 mt-1 font-mono">
+                {autoCorrectOnUpload ? '⚡ Auto-correction enabled on drop' : 'Supports Python, C, C++, Java, JavaScript, Ruby'}
+              </span>
             </div>
           )}
 
@@ -1074,14 +1295,16 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
       </div>
 
       {/* =========================================================================
-          WORKFLOW STEP 4: PROMINENT NAVY-BLUE ACTION BUTTON — RUN CODE REVIEW
+          WORKFLOW STEP 4: PROMINENT CODE CHECK & AUTO-CORRECT ACTIONS
           ========================================================================= */}
-      <div className="dev-card p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white border border-[#E2E6EC] shadow-sm">
+      <div className="dev-card p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-white border border-[#E2E6EC] shadow-sm">
         
         {/* Status Micro-Readout */}
         <div className="flex items-center space-x-3 text-sm">
           <span className={`w-3 h-3 rounded-full shrink-0 ${
-            loadingReview || remediating || rechecking
+            appliedNotice
+              ? 'bg-[#10B981]'
+              : loadingReview || remediating || rechecking
               ? 'bg-[#142B4A] animate-pulse'
               : reviewState
               ? reviewState.unresolved_count === 0 ? 'bg-[#10B981]' : 'bg-[#F59E0B]'
@@ -1089,7 +1312,9 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
           }`} />
           <div className="flex flex-col">
             <span className="text-[#142B4A] font-bold">
-              {loadingReview
+              {appliedNotice
+                ? 'Auto-corrected code applied to editor.'
+                : loadingReview
                 ? 'Running multi-agent review pipeline...'
                 : remediating
                 ? 'Applying Coder Agent automated fixes...'
@@ -1102,7 +1327,9 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
                 : 'Ready to review. Press Run Code Review or hit Ctrl+Enter.'}
             </span>
             <span className="text-xs text-[#606973] font-mono mt-0.5">
-              {loadingReview
+              {appliedNotice
+                ? 'Changes loaded into editor. Run Code Review to verify zero remaining defects.'
+                : loadingReview
                 ? 'MCP Linters → RAG Retrieval → Security & Bug Agents → Synthesis'
                 : reviewState
                 ? `Session #${currentSessionIdRef.current} · ${reviewState.issues?.length || 0} total findings analyzed`
@@ -1111,12 +1338,32 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
           </div>
         </div>
 
-        {/* Primary Action Button Deck */}
-        <div className="flex items-center space-x-3 shrink-0">
+        {/* Primary Action Button Deck with Auto-Correct Options */}
+        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 shrink-0">
+          
+          {/* Auto-Correct on Review Checkbox Option */}
+          <label 
+            className={`flex items-center space-x-2 text-xs font-semibold px-3 py-2 rounded-xl border transition-all cursor-pointer select-none ${
+              autoCorrectOnReview 
+                ? 'bg-[#EBF3FC] text-[#142B4A] border-[#B8D0EC] shadow-2xs font-bold' 
+                : 'bg-[#F8FAFC] text-[#606973] border-[#E2E6EC] hover:text-[#142B4A]'
+            }`}
+            title="Automatically run Coder Agent auto-remediation when actionable defects are detected"
+          >
+            <input
+              type="checkbox"
+              checked={autoCorrectOnReview}
+              onChange={(e) => setAutoCorrectOnReview(e.target.checked)}
+              className="w-3.5 h-3.5 rounded text-[#142B4A] cursor-pointer"
+            />
+            <span>Auto-Correct on Review</span>
+          </label>
+
+          {/* Cancel button if running */}
           {isAnyExecuting && (
             <button
               onClick={handleCancelExecution}
-              className="flex items-center space-x-2 px-4 py-3 rounded-xl text-sm font-bold uppercase tracking-wider text-[#991B1B] bg-[#FEE2E2] hover:bg-[#FED7D7] border border-[#FECACA] transition-all cursor-pointer shadow-sm"
+              className="flex items-center space-x-2 px-3.5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-[#991B1B] bg-[#FEE2E2] hover:bg-[#FED7D7] border border-[#FECACA] transition-all cursor-pointer shadow-sm"
               title="Safely cancel ongoing analysis"
             >
               <StopCircle className="w-4 h-4 text-[#EF4444]" />
@@ -1124,28 +1371,129 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
             </button>
           )}
 
+          {/* Code Check: Run Review Button */}
           <button
-            onClick={handleRunReview}
+            onClick={() => handleRunReview()}
             disabled={isAnyExecuting || !code.trim()}
-            title="Run Code Review (Ctrl+Enter)"
-            className="dev-btn-primary h-12 px-8 text-sm sm:text-base font-bold tracking-wider uppercase cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-md flex items-center space-x-2.5"
+            title={autoCorrectOnReview ? "Run Code Review & Auto-Correct (Ctrl+Enter)" : "Run Code Review (Ctrl+Enter)"}
+            className="dev-btn-primary h-12 px-6 sm:px-7 text-xs sm:text-sm font-bold tracking-wider uppercase cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-md flex items-center space-x-2"
           >
             {loadingReview ? (
               <>
                 <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 <span>Analyzing Code...</span>
               </>
+            ) : autoCorrectOnReview ? (
+              <>
+                <Sparkles className="w-4 h-4 text-white" />
+                <span>Review &amp; Auto-Fix</span>
+                <span className="text-[10px] font-mono opacity-80 ml-1 hidden md:inline">Ctrl+↵</span>
+              </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4 text-white" />
                 <span>Run Code Review</span>
-                <span className="text-[11px] font-mono opacity-80 ml-1 hidden md:inline">Ctrl+↵</span>
+                <span className="text-[10px] font-mono opacity-80 ml-1 hidden md:inline">Ctrl+↵</span>
               </>
             )}
           </button>
+
+          {/* Dedicated Auto-Correct Button from Code Check */}
+          <button
+            onClick={handleAutoCorrectClick}
+            disabled={isAnyExecuting || !code.trim() || (reviewState && reviewState.unresolved_count === 0)}
+            title={
+              reviewState && reviewState.unresolved_count === 0
+                ? "Code is clean — zero actionable defects"
+                : "Auto-correct detected defects using Coder Agent (Shift+Ctrl+Enter)"
+            }
+            className={`h-12 px-5 text-xs sm:text-sm font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer flex items-center space-x-2 shadow-sm ${
+              reviewState && reviewState.unresolved_count === 0
+                ? 'bg-[#EAEFEA] text-[#1B5E36] border border-[#BDE0D7] opacity-60 cursor-not-allowed'
+                : 'bg-white hover:bg-[#F0F5FA] text-[#142B4A] border-2 border-[#142B4A]'
+            } disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            {remediating ? (
+              <>
+                <span className="w-4 h-4 border-2 border-[#142B4A] border-t-transparent rounded-full animate-spin" />
+                <span>Auto-Correcting...</span>
+              </>
+            ) : reviewState && reviewState.unresolved_count === 0 ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-[#10B981]" />
+                <span>All Clean</span>
+              </>
+            ) : (
+              <>
+                <Wrench className="w-4 h-4 text-[#142B4A]" />
+                <span>
+                  {reviewState && reviewState.unresolved_count > 0
+                    ? `Auto-Correct (${reviewState.unresolved_count})`
+                    : 'Auto-Correct'}
+                </span>
+              </>
+            )}
+          </button>
+
+          {/* "after the change of auto correct" -> Apply Fix to Editor */}
+          {hasAutoCorrectChanges && (
+            <button
+              onClick={() => handleApplyToEditor()}
+              disabled={isAnyExecuting}
+              className="h-12 px-5 text-xs sm:text-sm font-bold uppercase tracking-wider cursor-pointer bg-[#10B981] hover:bg-[#059669] text-white rounded-xl shadow-md flex items-center space-x-2 transition-all animate-in fade-in disabled:opacity-40"
+              title="Apply the auto-corrected code directly into your editor above"
+            >
+              <CheckCircle2 className="w-4 h-4 text-white" />
+              <span>Apply Fix to Editor</span>
+            </button>
+          )}
+
+          {/* Revert Button if code was applied */}
+          {previousCodeBeforeApply !== null && (
+            <button
+              onClick={handleRevertAppliedCode}
+              disabled={isAnyExecuting}
+              className="dev-btn-secondary h-12 px-3 text-xs font-semibold cursor-pointer text-[#606973] hover:text-[#991B1B] flex items-center space-x-1.5"
+              title="Revert editor to code prior to applying auto-correction"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Revert</span>
+            </button>
+          )}
+
         </div>
 
       </div>
+
+      {/* Applied Notice Banner ("after the change of auto correct") */}
+      {appliedNotice && (
+        <div className="p-3.5 sm:p-4 rounded-xl bg-[#DCFCE7] border border-[#BBF7D0] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-[#166534] text-xs sm:text-sm shadow-sm animate-in fade-in">
+          <div className="flex items-center space-x-2.5">
+            <CheckCircle2 className="w-5 h-5 text-[#16A34A] shrink-0" />
+            <span className="font-semibold">
+              Auto-corrected code applied to editor! Active Health Score updated to{' '}
+              <span className="font-mono font-black text-sm bg-white px-2 py-0.5 rounded border border-[#BBF7D0] text-[#15803D]">
+                {(reviewState?.post_fix_score ?? reviewState?.health_score ?? 10.0).toFixed(1)} / 10.0
+              </span>.
+            </span>
+          </div>
+          <div className="flex items-center space-x-2 shrink-0">
+            <button
+              onClick={() => handleRunReview(false)}
+              disabled={isAnyExecuting}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider bg-[#16A34A] hover:bg-[#15803D] text-white transition-colors cursor-pointer shadow-2xs"
+            >
+              Verify Clean Status
+            </button>
+            <button
+              onClick={handleRevertAppliedCode}
+              className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-[#166534] hover:bg-[#BBF7D0] transition-colors cursor-pointer"
+            >
+              Undo
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* =========================================================================
           WORKFLOW STEP 5: VISIBLE COMPACT PIPELINE WITH REAL EXECUTION STATUSES
@@ -1166,6 +1514,8 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
       <TriageVerdict
         healthScore={reviewState?.health_score ?? 10.0}
         postFixScore={reviewState?.post_fix_score}
+        preFixScore={reviewState?.pre_fix_score ?? reviewState?.initial_health_score}
+        appliedToEditor={Boolean(reviewState?.applied_to_editor)}
         verdict={reviewState?.verdict || 'PENDING'}
         summary={reviewState?.summary || 'Run the review pipeline to execute static analysis, RAG grounding, and multi-agent triage.'}
         counts={reviewState?.counts || { critical: 0, high: 0, medium: 0, low: 0 }}
@@ -1221,9 +1571,11 @@ export default function CodeStudio({ gatewayStatus, onOpenSettings, requestedSam
         targetedLine={targetedLine}
         onApplyFix={handleApplyFix}
         onRecheck={handleManualRecheck}
+        onApplyToEditor={handleApplyToEditor}
         remediating={remediating}
         rechecking={rechecking}
         fixStateMessage={fixStateMessage}
+        postFixScore={reviewState?.post_fix_score ?? (reviewState?.remediation_status === 'SUCCESS' ? reviewState?.health_score : null)}
       />
 
       {/* =========================================================================
